@@ -3,22 +3,44 @@
 Measure and balance per-note loudness for a Hauptwerk sampleset, using a
 measurement mic at your listening position so the result reflects *your room*.
 
-This repo is currently at **Level 1 — the live meter**. It exists to confirm the
-measurement chain works (mic → PC → loudness number) before building the
-unattended rank scanner (Level 2) and the auto-voicer (Level 3).
+This repo now has **Level 1 (live meter)** and **Level 2 (rank scanner)**. Next
+up is Level 3 (writing corrections back into Hauptwerk automatically).
 
-## What Level 1 does
+## Level 1 — Single note tab
 
-- Shows a **live A-weighted loudness meter** from your mic input.
-- Measures the **noise floor** at the listening position.
-- Measures a **single note's steady-state loudness** as a repeatable dBFS number
-  (it skips the attack transient so the reading is stable).
+- **Live A-weighted loudness meter** from your mic input.
+- **Noise floor** measurement at the listening position.
+- **Single-note steady-state loudness** as a repeatable dBFS number (skips the
+  attack transient so the reading is stable).
 - Optionally **fires the note into Hauptwerk over MIDI** so measuring is
   hands-free.
-- Logs measurements to a table and **exports CSV**.
+- Logs measurements and **exports CSV**.
+
+## Level 2 — Rank scan tab
+
+- **Unattended scan** of a note range: MIDI-plays each note, measures it,
+  optionally averages repeats, and leaves a gap so the room/reverb tail decays
+  before the next note.
+- Fits a **smooth regulation curve** (outlier-resistant median smoothing — one
+  hot pipe can't drag the curve) and **flags notes that deviate** from their
+  neighbours beyond your tolerance.
+- Shows a **chart** (measured points vs. the target curve, with a tolerance band
+  and outliers labelled in red) and a **per-note correction table**: how many dB
+  to turn each pipe up (+) or down (−) to sit on the curve.
+- Adjust **Smoothing** / **Tolerance** to re-analyze instantly without rescanning.
+- **Exports CSV** with measured / target / correction per note.
 
 The numbers are *relative* (dBFS, 0 = digital full scale). For voicing we only
 compare notes to each other, so absolute calibration isn't needed.
+
+### Typical scan workflow
+
+1. In Hauptwerk, **solo a single stop** on one manual (draw only that stop).
+2. In the app: **Start** the mic, **Open** the MIDI port, set **Channel** to that
+   manual's channel, and **Measure noise floor**.
+3. Go to the **Rank scan** tab, set the range (e.g. C2–C7), and click **Scan rank**.
+4. Read the chart/table, then apply the suggested corrections in Hauptwerk's
+   pipe-by-pipe voicing screen. Re-scan to confirm.
 
 ## Setup (Windows)
 
@@ -78,6 +100,8 @@ PYTHONPATH=. python tests/test_analysis.py
 | `organ_voicing/weighting.py` | A-weighting + RMS/peak level math (numpy only) |
 | `organ_voicing/audio.py`     | Mic capture + live metering (sounddevice) |
 | `organ_voicing/midi_out.py`  | Send notes to Hauptwerk (mido) |
+| `organ_voicing/scanner.py`   | Unattended rank-scan engine |
+| `organ_voicing/analysis.py`  | Regulation-curve fit + outlier detection (numpy only) |
 | `organ_voicing/notes.py`     | Note number/name parsing (pure) |
-| `organ_voicing/app.py`       | Tkinter GUI |
+| `organ_voicing/app.py`       | Tkinter GUI (Single note + Rank scan tabs) |
 | `main.py`                    | Entry point |

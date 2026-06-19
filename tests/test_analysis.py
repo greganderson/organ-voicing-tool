@@ -53,6 +53,40 @@ def test_note_names_and_parse():
     assert parse_note("60") == 60
     assert parse_note("f#3") == 54
     assert parse_note("A4") == 69
+    assert parse_note("C2") == 36   # typical manual low note
+    assert parse_note("C7") == 96   # typical manual high note
+
+
+def test_analysis_flags_single_hot_pipe():
+    from organ_voicing import analysis
+    # A smooth rank with one note 4 dB hot in the middle.
+    vals = list(np.linspace(-40, -38, 25))  # gentle regulation curve
+    hot = 12
+    vals[hot] += 4.0
+    res = analysis.analyze(vals, window=7, tolerance_db=1.5)
+    # The hot note is flagged, its neighbours are not.
+    assert res.is_outlier[hot]
+    assert not res.is_outlier[hot - 3]
+    assert not res.is_outlier[hot + 3]
+    # Correction pushes the hot note back down (negative).
+    assert res.correction[hot] < -2.0
+
+
+def test_curve_is_outlier_resistant():
+    from organ_voicing import analysis
+    # The fitted target near a hot pipe should NOT be dragged up to meet it
+    # (median-based smoothing ignores the single spike).
+    vals = [-40.0] * 25
+    vals[12] += 6.0
+    res = analysis.analyze(vals, window=7, tolerance_db=1.5)
+    assert abs(res.target[12] - (-40.0)) < 0.6
+
+
+def test_flat_rank_has_no_outliers():
+    from organ_voicing import analysis
+    rng = list(np.linspace(-40, -39, 30))
+    res = analysis.analyze(rng, window=7, tolerance_db=1.5)
+    assert res.is_outlier.sum() == 0
 
 
 if __name__ == "__main__":
