@@ -332,6 +332,7 @@ class App(tk.Tk):
 
         try:
             predicted = None
+            apply_count = 0   # how many apply passes have run (decides direction)
             for p in range(1, cfg["passes"] + 1):
                 if self._av_stop:
                     log("Stopped."); break
@@ -370,31 +371,44 @@ class App(tk.Tk):
                 correction = np.clip(correction, -MAX_STEP, MAX_STEP)
                 predicted = measured + correction  # expected next measurement
 
+                # Alternate direction: the first apply goes low->high (you click
+                # the bottom note's field); each later apply starts where the
+                # previous one left off, so no repositioning is needed.
+                reverse = (apply_count % 2 == 1)
+                first_apply = (apply_count == 0)
+                if first_apply:
+                    prompt = "Click the BOTTOM note's amplitude field in Hauptwerk — applying in {}s …"
+                else:
+                    direction = "high→low" if reverse else "low→high"
+                    prompt = "Continuing %s — keep hands off — applying in {}s …" % direction
+
                 for s in range(cfg["countdown"], 0, -1):
                     if self._av_stop:
                         break
-                    status(f"Click the FIRST note's amplitude field in Hauptwerk — applying in {s}s …")
+                    status(prompt.format(s))
                     time.sleep(1)
                 if self._av_stop:
                     log("Stopped before applying."); break
 
-                status("Applying corrections …")
+                status("Applying corrections " + ("(high→low) …" if reverse else "(low→high) …"))
 
                 def on_step(i, note, old, new):
                     status(f"Apply {note_name(note)}: {old:+.1f} → {new:+.1f} dB  ({i + 1}/{n})")
 
                 try:
                     applied = voicing_apply.apply_pass(
-                        notes, correction.tolist(),
+                        notes, correction.tolist(), reverse=reverse,
                         tab_normal=cfg["tab_normal"], tab_octave=cfg["tab_octave"],
                         should_stop=lambda: self._av_stop, on_step=on_step)
                 except voicing_apply.ApplyError as e:
                     log(f"✗ Apply aborted: {e}")
                     self.after(0, lambda e=e: messagebox.showerror("Apply failed", str(e)))
                     break
-                log(f"  applied {len(applied)}/{n} notes.")
+                apply_count += 1
+                log(f"  applied {len(applied)}/{n} notes ({'high→low' if reverse else 'low→high'}).")
                 if len(applied) < n:
-                    log("  (stopped mid-apply)"); break
+                    log("  (stopped mid-apply — focus is no longer at a known note; "
+                        "restart and re-click the bottom field)"); break
         except Exception as e:
             log(f"✗ Error: {e}")
             self.after(0, lambda e=e: messagebox.showerror("Auto-voice error", str(e)))

@@ -55,6 +55,10 @@ hunting): it reads each field (Ctrl+C), adds the correction, pastes the result
 (Ctrl+V), and Tabs to the next note (4 Tabs, or 6 at a B→C octave boundary).
 Because it *reads then adds*, it preserves any existing voicing.
 
+**Direction alternates** so focus is never repositioned: the first pass goes
+low→high and ends on the top note; the next starts there and goes high→low
+(Shift+Tab); and so on. **You only click the starting field once.**
+
 **Self-verifying:** after each apply pass it re-measures and checks the result
 matches its prediction. If the numbers don't line up (e.g. a Tab mis-count), it
 **stops immediately** rather than writing values to the wrong notes.
@@ -66,9 +70,10 @@ matches its prediction. If the numbers don't line up (e.g. a Tab mis-count), it
 2. **Work in a spare voicing preset** so you can revert / A/B.
 3. In the app (Rank scan tab): set the range and **Target** (`smooth` keeps the
    rank's natural regulation curve; `flat` makes every note equal).
-4. Click **Start auto-voice**, confirm the prompt. When it says *"click the first
-   note's amplitude field"*, click that field in Hauptwerk and **don't touch the
-   keyboard/mouse** during the apply pass.
+4. Click **Start auto-voice**, confirm the prompt. When it says *"click the
+   bottom note's amplitude field"*, click that field in Hauptwerk **once** and
+   **don't touch the keyboard/mouse** during the apply passes (later passes
+   continue automatically in alternating directions).
 5. Watch the log: spread and worst-correction shrink each pass until it converges.
 
 **Aborting:** slam the mouse pointer into a screen corner (pyautogui failsafe),

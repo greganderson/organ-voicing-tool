@@ -71,14 +71,22 @@ def write_value(value: float, settle: float = 0.06) -> None:
 
 
 def tabs_to_next(next_note: int, normal: int = 4, octave: int = 6) -> int:
-    """How many Tabs to reach the next note's amplitude field."""
-    return octave if next_note % 12 == 0 else normal  # next note is a C
+    """How many Tabs between a note and its neighbour.
+
+    The B<->C boundary costs `octave` (6); every other step costs `normal` (4).
+    The gap is symmetric, so this is correct in both directions as long as you
+    pass the *upper* of the two notes (the C at a boundary).
+    """
+    return octave if next_note % 12 == 0 else normal
 
 
-def press_tabs(n: int, delay: float = 0.03) -> None:
+def press_tabs(n: int, delay: float = 0.03, reverse: bool = False) -> None:
     pag, _ = _backends()
     for _ in range(n):
-        pag.press("tab")
+        if reverse:
+            pag.hotkey("shift", "tab")
+        else:
+            pag.press("tab")
         time.sleep(delay)
 
 
@@ -86,6 +94,7 @@ def apply_pass(
     notes: list[int],
     corrections: list[float],
     *,
+    reverse: bool = False,
     tab_normal: int = 4,
     tab_octave: int = 6,
     key_delay: float = 0.03,
@@ -97,22 +106,33 @@ def apply_pass(
     """Walk the rank, adding each correction to the field's current value.
 
     Reads the current value (non-destructive — preserves existing voicing),
-    adds the correction, writes it back, then Tabs to the next note. Returns a
-    list of (note, old_value, new_value).
+    adds the correction, writes it back, then moves to the neighbouring note.
+
+    `corrections[i]` always applies to `notes[i]`, regardless of direction.
+    Forward (low→high) ends focus on the top note; reverse (high→low) ends on
+    the bottom note — so alternating passes never need to reposition focus.
+    Returns a list of (note, old_value, new_value) in the order visited.
     """
     if len(notes) != len(corrections):
         raise ApplyError("notes and corrections length mismatch.")
-    applied: list[tuple[int, float, float]] = []
     n = len(notes)
-    for i, note in enumerate(notes):
+    order = range(n - 1, -1, -1) if reverse else range(n)
+
+    applied: list[tuple[int, float, float]] = []
+    prev_i: int | None = None
+    for i in order:
         if should_stop():
             break
+        if prev_i is not None:
+            # The expensive (6-Tab) step is the one touching a C. Forward we're
+            # entering notes[i]; reverse we're leaving notes[prev_i] (the upper).
+            boundary_note = notes[i] if not reverse else notes[prev_i]
+            steps = tabs_to_next(boundary_note, tab_normal, tab_octave)
+            press_tabs(steps, key_delay, reverse=reverse)
         old = read_value(settle)
-        new = old + float(corrections[i])
-        new = max(clamp[0], min(clamp[1], new))
+        new = max(clamp[0], min(clamp[1], old + float(corrections[i])))
         write_value(new, settle)
-        applied.append((note, old, new))
-        on_step(i, note, old, new)
-        if i < n - 1:
-            press_tabs(tabs_to_next(notes[i + 1], tab_normal, tab_octave), key_delay)
+        applied.append((notes[i], old, new))
+        on_step(i, notes[i], old, new)
+        prev_i = i
     return applied

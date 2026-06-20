@@ -127,6 +127,66 @@ def test_autovoice_converges_in_simulation():
     assert measured.max() - measured.min() < 0.5   # essentially flat
 
 
+class _FakeRig:
+    """Models Hauptwerk's voicing fields: amplitude fields spaced 4 apart, 6 at
+    a B->C boundary, with dummy fields in between. Doubles as fake pyautogui +
+    pyperclip so we can drive voicing_apply.apply_pass with no real keyboard."""
+
+    FAILSAFE = True
+
+    def __init__(self, notes, init_values):
+        pos = 0
+        self.note_to_pos = {notes[0]: 0}
+        for k in range(1, len(notes)):
+            pos += 6 if notes[k] % 12 == 0 else 4
+            self.note_to_pos[notes[k]] = pos
+        self.pos_to_note = {p: n for n, p in self.note_to_pos.items()}
+        self.values = dict(init_values)
+        self.focus = self.note_to_pos[notes[0]]
+        self.clipboard = ""
+
+    # pyperclip side
+    def copy(self, s): self.clipboard = s
+    def paste(self): return self.clipboard
+
+    # pyautogui side
+    def press(self, key):
+        if key == "tab":
+            self.focus += 1
+
+    def hotkey(self, *keys):
+        if keys == ("shift", "tab"):
+            self.focus -= 1
+        elif keys == ("ctrl", "c"):
+            note = self.pos_to_note.get(self.focus)
+            if note is not None:
+                self.clipboard = f"{self.values[note]:.1f}"
+        elif keys == ("ctrl", "v"):
+            note = self.pos_to_note.get(self.focus)
+            if note is not None:
+                self.values[note] = float(self.clipboard)
+
+
+def test_apply_pass_navigation_both_directions():
+    from organ_voicing import voicing_apply as va
+    notes = list(range(57, 64))           # A3..D#4, crossing the B3->C4 boundary
+    rig = _FakeRig(notes, {n: 0.0 for n in notes})
+    va._backends = lambda: (rig, rig)     # inject fake keyboard/clipboard
+
+    # Forward: distinct corrections must land on the right notes.
+    corr = [float(i + 1) for i in range(len(notes))]
+    va.apply_pass(notes, corr, reverse=False, key_delay=0, settle=0)
+    for i, n in enumerate(notes):
+        assert abs(rig.values[n] - corr[i]) < 1e-9, (n, rig.values[n])
+    assert rig.focus == rig.note_to_pos[notes[-1]]   # ended on the top note
+
+    # Reverse continues from the top note (no reposition) and adds correctly.
+    va.apply_pass(notes, [10.0] * len(notes), reverse=True, key_delay=0, settle=0)
+    for i, n in enumerate(notes):
+        assert abs(rig.values[n] - (corr[i] + 10.0)) < 1e-9, (n, rig.values[n])
+    assert rig.focus == rig.note_to_pos[notes[0]]    # ended back on the bottom note
+
+
 if __name__ == "__main__":
     import sys
     import traceback
