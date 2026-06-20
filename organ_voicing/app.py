@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
-from . import analysis, audio, midi_out, scanner, weighting
+from . import analysis, audio, control, midi_out, scanner, weighting
 from .notes import note_name, parse_note
 
 
@@ -221,8 +221,8 @@ class App(tk.Tk):
         row = ttk.Frame(av)
         row.pack(fill="x", padx=6, pady=4)
         ttk.Label(row, text="Max passes:").pack(side="left")
-        self.passes_var = tk.IntVar(value=3)
-        ttk.Spinbox(row, from_=1, to=8, textvariable=self.passes_var, width=4).pack(side="left", padx=(2, 12))
+        self.passes_var = tk.IntVar(value=8)
+        ttk.Spinbox(row, from_=1, to=25, textvariable=self.passes_var, width=4).pack(side="left", padx=(2, 12))
         ttk.Label(row, text="Focus countdown (s):").pack(side="left")
         self.count_var = tk.IntVar(value=5)
         ttk.Spinbox(row, from_=2, to=15, textvariable=self.count_var, width=4).pack(side="left", padx=(2, 12))
@@ -310,9 +310,9 @@ class App(tk.Tk):
 
         notes = list(range(cfg["low"], cfg["high"] + 1))
         n = len(notes)
-        MAX_STEP = 12.0       # never move a pipe more than this per pass
-        DESYNC_DB = 2.0       # per-note deviation from prediction that counts as "off"
-        DESYNC_FRAC = 0.30    # fraction of notes off -> assume Tab desync
+        LIMIT = 24.0          # Hauptwerk amplitude field hard limits (+/- dB)
+        STUCK_ROUNDS = 3      # rounds pinned at a limit (still wanting more) -> "done"
+        DIVERGE_DB = 10.0     # catastrophic worsening vs best spread -> safety stop
 
         def status(text):
             self.after(0, lambda: self.av_status.config(text=text))
@@ -331,8 +331,10 @@ class App(tk.Tk):
                 should_stop=lambda: self._av_stop, on_progress=prog, **cfg["scan"])
 
         try:
-            predicted = None
-            apply_count = 0   # how many apply passes have run (decides direction)
+            apply_count = 0           # how many apply passes have run (decides direction)
+            done = np.zeros(n, dtype=bool)   # notes finished (pinned at a limit)
+            stuck = np.zeros(n, dtype=int)   # consecutive rounds pinned-and-wanting-more
+            best_spread = float("inf")
             for p in range(1, cfg["passes"] + 1):
                 if self._av_stop:
                     log("Stopped."); break
@@ -347,29 +349,34 @@ class App(tk.Tk):
                 self._scan_results = results
                 self.after(0, self._reanalyze)
 
-                if predicted is not None:
-                    off = int(np.sum(np.abs(measured - predicted) > DESYNC_DB))
-                    if off > DESYNC_FRAC * n:
-                        log(f"⚠ {off}/{n} notes are far from the predicted result.")
-                        log("  Likely a Tab mis-count (values may be misaligned). STOPPING.")
-                        log("  Check Hauptwerk, fix Tabs/note, and reset that preset if needed.")
-                        break
-                    log(f"  verification: {off}/{n} notes off prediction (ok).")
-
+                # Pure feedback: correct toward the target from what we actually
+                # measured. No assumption that a change moved 1:1 — we just keep
+                # iterating until the curve evens out.
                 target = analysis.make_target(measured, mode=cfg["mode"], window=cfg["window"])
                 correction = target - measured
-                worst = float(np.max(np.abs(correction)))
-                spread = float(measured.max() - measured.min())
-                log(f"  spread {spread:.1f} dB · worst correction {worst:.1f} dB")
+                correction[done] = 0.0           # leave finished notes alone
 
-                if worst <= cfg["tol"]:
-                    log(f"✓ Converged — worst correction {worst:.1f} ≤ {cfg['tol']:.1f} dB. Done.")
+                active = ~done
+                worst = control.worst_active_correction(correction, done)
+                spread = float(measured.max() - measured.min())
+                log(f"  spread {spread:.1f} dB · worst active correction {worst:.1f} dB"
+                    f" · {int(done.sum())} done")
+
+                # Safety: a real Tab mis-count would scramble the rank and blow the
+                # spread up. This is convergence-based (not 1:1-based), so honest
+                # non-matching changes don't trip it.
+                if spread > best_spread + DIVERGE_DB:
+                    log(f"⚠ Spread jumped {spread - best_spread:.1f} dB worse than best — "
+                        f"something's off (focus lost / Tab mis-count?). STOPPING.")
+                    break
+                best_spread = min(best_spread, spread)
+
+                if worst <= cfg["tol"] or not active.any():
+                    log(f"✓ Curve within ±{cfg['tol']:.1f} dB"
+                        f"{f' (excluding {int(done.sum())} maxed-out notes)' if done.any() else ''}. Done.")
                     break
                 if p == cfg["passes"]:
-                    log("Reached max passes (not fully converged)."); break
-
-                correction = np.clip(correction, -MAX_STEP, MAX_STEP)
-                predicted = measured + correction  # expected next measurement
+                    log("Reached max passes (not fully even)."); break
 
                 # Alternate direction: the first apply goes low->high (you click
                 # the bottom note's field); each later apply starts where the
@@ -397,7 +404,7 @@ class App(tk.Tk):
 
                 try:
                     applied = voicing_apply.apply_pass(
-                        notes, correction.tolist(), reverse=reverse,
+                        notes, correction.tolist(), reverse=reverse, clamp=(-LIMIT, LIMIT),
                         tab_normal=cfg["tab_normal"], tab_octave=cfg["tab_octave"],
                         should_stop=lambda: self._av_stop, on_step=on_step)
                 except voicing_apply.ApplyError as e:
@@ -405,6 +412,17 @@ class App(tk.Tk):
                     self.after(0, lambda e=e: messagebox.showerror("Apply failed", str(e)))
                     break
                 apply_count += 1
+
+                # Track notes pinned at a limit that still want to go further; after
+                # STUCK_ROUNDS of that, mark them "done" so they stop blocking the
+                # convergence check (a pipe physically can't get any louder/quieter).
+                applied_by_note = {note: (old, new) for note, old, new in applied}
+                newly_done = control.update_done(
+                    notes, applied_by_note, correction, done, stuck,
+                    limit=LIMIT, stuck_rounds=STUCK_ROUNDS)
+                if newly_done:
+                    log(f"  at limit {STUCK_ROUNDS}× — marking done: "
+                        f"{', '.join(note_name(x) for x in newly_done)}")
                 log(f"  applied {len(applied)}/{n} notes ({'high→low' if reverse else 'low→high'}).")
                 if len(applied) < n:
                     log("  (stopped mid-apply — focus is no longer at a known note; "

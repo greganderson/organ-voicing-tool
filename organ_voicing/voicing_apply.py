@@ -99,7 +99,7 @@ def apply_pass(
     tab_octave: int = 6,
     key_delay: float = 0.03,
     settle: float = 0.06,
-    clamp=(-40.0, 40.0),
+    clamp=(-24.0, 24.0),
     should_stop=lambda: False,
     on_step=lambda i, note, old, new: None,
 ) -> list[tuple[int, float, float]]:

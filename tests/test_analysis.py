@@ -127,6 +127,71 @@ def test_autovoice_converges_in_simulation():
     assert measured.max() - measured.min() < 0.5   # essentially flat
 
 
+def test_update_done_marks_pinned_note():
+    from organ_voicing import control
+    notes = [60, 61, 62]
+    done = np.zeros(3, dtype=bool)
+    stuck = np.zeros(3, dtype=int)
+    # Note 61 lands on +24 but still wants more (+26). Others fine.
+    correction = np.array([0.0, 2.0, 0.0])
+    applied = {60: (10.0, 10.0), 61: (24.0, 24.0), 62: (-5.0, -5.0)}
+    for r in range(2):
+        nd = control.update_done(notes, applied, correction, done, stuck)
+        assert nd == []                 # not yet (needs 3 rounds)
+    nd = control.update_done(notes, applied, correction, done, stuck)
+    assert nd == [61] and done[1]
+    # A pinned, now-done note is excluded from the convergence check.
+    assert control.worst_active_correction([0.0, 99.0, 0.0], done) == 0.0
+
+
+def test_update_done_resets_when_not_pinned():
+    from organ_voicing import control
+    notes = [60]
+    done = np.zeros(1, dtype=bool)
+    stuck = np.array([2])               # was nearly stuck
+    # Now it's NOT at a rail -> counter resets, never marked done.
+    control.update_done(notes, {60: (5.0, 7.0)}, np.array([2.0]), done, stuck)
+    assert stuck[0] == 0 and not done[0]
+
+
+def test_feedback_converges_with_weak_response_and_rail():
+    """Realistic loop: response is NOT 1:1, and one note needs the rail.
+
+    measured = trim*gain + K, where gain<1 (a change moves the meter less than
+    its dB), and one note has such a large K that it can't be balanced even at
+    -24. The loop should flatten the rest and mark the unbalanceable note done.
+    """
+    from organ_voicing import analysis, control
+    n = 24
+    rng = np.random.default_rng(1)
+    gain = 0.45                          # applying X dB only moves meter 0.45X
+    K = rng.normal(0, 4.0, n)
+    K[7] += 80.0                         # absurdly loud pipe — can't be fixed even at -24
+    trim = np.zeros(n)
+    done = np.zeros(n, dtype=bool)
+    stuck = np.zeros(n, dtype=int)
+    LIMIT = 24.0
+
+    for _ in range(20):
+        measured = trim * gain + K
+        target = analysis.make_target(measured, mode="flat")
+        corr = target - measured
+        corr[done] = 0.0
+        if control.worst_active_correction(corr, done) <= 1.0:
+            break
+        desired = trim + corr
+        new_trim = np.clip(desired, -LIMIT, LIMIT)
+        applied = {i: (trim[i], new_trim[i]) for i in range(n)}
+        control.update_done(list(range(n)), applied, corr, done, stuck, limit=LIMIT)
+        trim = new_trim
+
+    assert done[7]                       # the impossible note was retired
+    measured = trim * gain + K
+    active = ~done
+    spread = measured[active].max() - measured[active].min()
+    assert spread < 2.0                  # everything else evened out
+
+
 class _FakeRig:
     """Models Hauptwerk's voicing fields: amplitude fields spaced 4 apart, 6 at
     a B->C boundary, with dummy fields in between. Doubles as fake pyautogui +

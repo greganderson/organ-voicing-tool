@@ -59,9 +59,20 @@ Because it *reads then adds*, it preserves any existing voicing.
 low→high and ends on the top note; the next starts there and goes high→low
 (Shift+Tab); and so on. **You only click the starting field once.**
 
-**Self-verifying:** after each apply pass it re-measures and checks the result
-matches its prediction. If the numbers don't line up (e.g. a Tab mis-count), it
-**stops immediately** rather than writing values to the wrong notes.
+**Pure feedback — no 1:1 assumption.** It does *not* expect a change to move the
+meter by the amount applied (the response often isn't 1:1, and readings have
+noise). It just keeps measuring and correcting toward the target until the curve
+evens out (worst remaining correction ≤ tolerance).
+
+**Rails and stuck notes.** Amplitude is limited to ±24 dB. If a note is pinned at
+a rail and *still* wants to go further, after 3 more rounds it's marked **done**
+and excluded from the convergence check — a pipe that physically can't get any
+louder/quieter shouldn't hold up the rest of the rank.
+
+**Safety stop.** It still guards against a real Tab mis-count or lost focus, but
+by watching for the spread suddenly blowing up (a catastrophe), not by checking
+whether each change matched a prediction — so honest non-matching changes don't
+trip it.
 
 ### Auto-voice setup
 
@@ -142,6 +153,7 @@ PYTHONPATH=. python tests/test_analysis.py
 | `organ_voicing/midi_out.py`  | Send notes to Hauptwerk (mido) |
 | `organ_voicing/scanner.py`   | Unattended rank-scan engine |
 | `organ_voicing/analysis.py`  | Regulation-curve fit + outlier detection (numpy only) |
+| `organ_voicing/control.py`   | Closed-loop convergence + rail/stuck-note logic (numpy only) |
 | `organ_voicing/voicing_apply.py` | Keyboard/clipboard automation of Hauptwerk's voicing screen |
 | `organ_voicing/notes.py`     | Note number/name parsing (pure) |
 | `organ_voicing/app.py`       | Tkinter GUI (Single note + Rank scan tabs) |
