@@ -89,6 +89,44 @@ def test_flat_rank_has_no_outliers():
     assert res.is_outlier.sum() == 0
 
 
+def test_flat_target_is_median():
+    from organ_voicing import analysis
+    vals = [-40, -38, -36, -34, -50]  # median -38
+    tgt = analysis.make_target(vals, mode="flat")
+    assert np.allclose(tgt, -38.0)
+
+
+def test_tab_count_rule():
+    from organ_voicing import voicing_apply as va
+    from organ_voicing.notes import parse_note
+    # 6 tabs only when the NEXT note is a C (B->C octave boundary), else 4.
+    assert va.tabs_to_next(parse_note("C4")) == 6   # next note is C4
+    assert va.tabs_to_next(parse_note("C5")) == 6
+    assert va.tabs_to_next(parse_note("D4")) == 4
+    assert va.tabs_to_next(parse_note("B3")) == 4
+    assert va.tabs_to_next(parse_note("F#3")) == 4
+
+
+def test_autovoice_converges_in_simulation():
+    """The closed loop should flatten a rank in 1-2 passes.
+
+    Models reality: each note's measured level = its amplitude trim + a fixed
+    per-note room/sample constant K. Applying correction (= target - measured)
+    to the trim moves the measurement 1:1, so it should converge fast.
+    """
+    from organ_voicing import analysis
+    rng = np.random.default_rng(0)
+    K = rng.normal(0, 3.0, size=30)        # per-note room+sample offsets
+    trim = np.zeros(30)                     # current voicing trims (start at 0)
+    for _ in range(3):
+        measured = trim + K
+        target = analysis.make_target(measured, mode="flat")
+        corr = target - measured
+        trim = trim + corr                  # "apply"
+    measured = trim + K
+    assert measured.max() - measured.min() < 0.5   # essentially flat
+
+
 if __name__ == "__main__":
     import sys
     import traceback

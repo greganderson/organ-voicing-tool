@@ -3,8 +3,9 @@
 Measure and balance per-note loudness for a Hauptwerk sampleset, using a
 measurement mic at your listening position so the result reflects *your room*.
 
-This repo now has **Level 1 (live meter)** and **Level 2 (rank scanner)**. Next
-up is Level 3 (writing corrections back into Hauptwerk automatically).
+This repo now has **Level 1 (live meter)**, **Level 2 (rank scanner)**, and
+**Level 3 (closed-loop auto-voicer)** that writes corrections back into
+Hauptwerk by itself.
 
 ## Level 1 — Single note tab
 
@@ -41,6 +42,40 @@ compare notes to each other, so absolute calibration isn't needed.
 3. Go to the **Rank scan** tab, set the range (e.g. C2–C7), and click **Scan rank**.
 4. Read the chart/table, then apply the suggested corrections in Hauptwerk's
    pipe-by-pipe voicing screen. Re-scan to confirm.
+
+## Level 3 — Auto-voice (closed loop)
+
+Found on the **Rank scan** tab. It runs the whole loop hands-free:
+
+> scan → fit target → compute per-note corrections → **type them into Hauptwerk's
+> voicing screen** → re-scan → repeat until the rank is within tolerance.
+
+It drives the **amplitude (dB)** fields by keyboard + clipboard (no mouse/pixel
+hunting): it reads each field (Ctrl+C), adds the correction, pastes the result
+(Ctrl+V), and Tabs to the next note (4 Tabs, or 6 at a B→C octave boundary).
+Because it *reads then adds*, it preserves any existing voicing.
+
+**Self-verifying:** after each apply pass it re-measures and checks the result
+matches its prediction. If the numbers don't line up (e.g. a Tab mis-count), it
+**stops immediately** rather than writing values to the wrong notes.
+
+### Auto-voice setup
+
+1. In Hauptwerk: solo the stop, open **Organ settings → Pipe and rank voicing**,
+   select the rank, and choose **"amplitude (dB)"** in the Adjustment dropdown.
+2. **Work in a spare voicing preset** so you can revert / A/B.
+3. In the app (Rank scan tab): set the range and **Target** (`smooth` keeps the
+   rank's natural regulation curve; `flat` makes every note equal).
+4. Click **Start auto-voice**, confirm the prompt. When it says *"click the first
+   note's amplitude field"*, click that field in Hauptwerk and **don't touch the
+   keyboard/mouse** during the apply pass.
+5. Watch the log: spread and worst-correction shrink each pass until it converges.
+
+**Aborting:** slam the mouse pointer into a screen corner (pyautogui failsafe),
+or click **Stop**.
+
+**Tabs/note** and **Tabs at C** are adjustable in case a rank navigates
+differently — the self-verification will tell you if they're wrong.
 
 ## Setup (Windows)
 
@@ -102,6 +137,7 @@ PYTHONPATH=. python tests/test_analysis.py
 | `organ_voicing/midi_out.py`  | Send notes to Hauptwerk (mido) |
 | `organ_voicing/scanner.py`   | Unattended rank-scan engine |
 | `organ_voicing/analysis.py`  | Regulation-curve fit + outlier detection (numpy only) |
+| `organ_voicing/voicing_apply.py` | Keyboard/clipboard automation of Hauptwerk's voicing screen |
 | `organ_voicing/notes.py`     | Note number/name parsing (pure) |
 | `organ_voicing/app.py`       | Tkinter GUI (Single note + Rank scan tabs) |
 | `main.py`                    | Entry point |

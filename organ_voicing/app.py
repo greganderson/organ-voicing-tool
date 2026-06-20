@@ -33,6 +33,7 @@ class App(tk.Tk):
         self.noise_floor_db: float | None = None
         self._busy = False
         self._scan_stop = False
+        self._av_stop = False
         self._scan_results: list[scanner.NoteResult] = []
         self._balance: analysis.BalanceResult | None = None
 
@@ -156,6 +157,12 @@ class App(tk.Tk):
         ttk.Label(opt, text="Repeats:").grid(row=0, column=8, sticky="e", padx=(16, 2))
         self.rep_var = tk.IntVar(value=1)
         ttk.Spinbox(opt, from_=1, to=5, textvariable=self.rep_var, width=4).grid(row=0, column=9, sticky="w")
+        ttk.Label(opt, text="Target:").grid(row=0, column=10, sticky="e", padx=(16, 2))
+        self.mode_var = tk.StringVar(value="smooth")
+        mode_cb = ttk.Combobox(opt, state="readonly", width=8, textvariable=self.mode_var,
+                               values=["smooth", "flat"])
+        mode_cb.grid(row=0, column=11, sticky="w")
+        mode_cb.bind("<<ComboboxSelected>>", lambda e: self._reanalyze())
         # Row 1: analysis params
         ttk.Label(opt, text="Smoothing:").grid(row=1, column=0, sticky="e", padx=4, pady=4)
         self.win_var = tk.IntVar(value=7)
@@ -177,6 +184,8 @@ class App(tk.Tk):
         self.scan_pb.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.scan_status = ttk.Label(prog, text="idle")
         self.scan_status.pack(side="left")
+
+        self._build_autovoice(tab)
 
         # Chart
         chartf = ttk.LabelFrame(tab, text="Loudness across the rank")
@@ -202,6 +211,207 @@ class App(tk.Tk):
         sb = ttk.Scrollbar(resf, orient="vertical", command=self.scan_tree.yview)
         sb.pack(side="left", fill="y", pady=8)
         self.scan_tree.configure(yscrollcommand=sb.set)
+
+    # ===== Auto-voice (closed loop) ========================================
+
+    def _build_autovoice(self, tab):
+        av = ttk.LabelFrame(tab, text="Auto-voice  (closed loop — writes corrections into Hauptwerk)")
+        av.pack(fill="x", padx=6, pady=6)
+
+        row = ttk.Frame(av)
+        row.pack(fill="x", padx=6, pady=4)
+        ttk.Label(row, text="Max passes:").pack(side="left")
+        self.passes_var = tk.IntVar(value=3)
+        ttk.Spinbox(row, from_=1, to=8, textvariable=self.passes_var, width=4).pack(side="left", padx=(2, 12))
+        ttk.Label(row, text="Focus countdown (s):").pack(side="left")
+        self.count_var = tk.IntVar(value=5)
+        ttk.Spinbox(row, from_=2, to=15, textvariable=self.count_var, width=4).pack(side="left", padx=(2, 12))
+        ttk.Label(row, text="Tabs/note:").pack(side="left")
+        self.tabn_var = tk.IntVar(value=4)
+        ttk.Spinbox(row, from_=1, to=12, textvariable=self.tabn_var, width=4).pack(side="left", padx=(2, 12))
+        ttk.Label(row, text="Tabs at C:").pack(side="left")
+        self.tabc_var = tk.IntVar(value=6)
+        ttk.Spinbox(row, from_=1, to=12, textvariable=self.tabc_var, width=4).pack(side="left", padx=(2, 12))
+        self.av_btn = ttk.Button(row, text="▶ Start auto-voice", command=self._start_autovoice)
+        self.av_btn.pack(side="left", padx=6)
+        self.av_stop_btn = ttk.Button(row, text="Stop", command=self._stop_autovoice, state="disabled")
+        self.av_stop_btn.pack(side="left")
+
+        self.av_status = ttk.Label(av, text="idle", foreground="#555")
+        self.av_status.pack(fill="x", padx=8)
+        logf = ttk.Frame(av)
+        logf.pack(fill="x", padx=6, pady=(2, 6))
+        self.av_log = tk.Text(logf, height=6, wrap="word", font=("Consolas", 9))
+        self.av_log.pack(side="left", fill="both", expand=True)
+        lsb = ttk.Scrollbar(logf, orient="vertical", command=self.av_log.yview)
+        lsb.pack(side="left", fill="y")
+        self.av_log.configure(yscrollcommand=lsb.set, state="disabled")
+
+    def _log(self, msg):
+        self.av_log.configure(state="normal")
+        self.av_log.insert("end", msg + "\n")
+        self.av_log.see("end")
+        self.av_log.configure(state="disabled")
+
+    def _start_autovoice(self):
+        if self._busy or not self._require_stream() or not self._require_midi():
+            return
+        try:
+            low, high = parse_note(self.low_var.get()), parse_note(self.high_var.get())
+        except ValueError as e:
+            messagebox.showerror("Bad note range", str(e))
+            return
+        if high < low:
+            messagebox.showerror("Bad range", "'To' note must be ≥ 'From' note.")
+            return
+        if self.noise_floor_db is None:
+            if not messagebox.askyesno("No noise floor",
+                                       "Noise floor isn't measured, so low-signal notes "
+                                       "won't be guarded. Continue anyway?"):
+                return
+        ok = messagebox.askokcancel(
+            "Ready to auto-voice",
+            "This will WRITE amplitude values into Hauptwerk's voicing screen.\n\n"
+            "Make sure:\n"
+            "  • the rank's stop is soloed and the Pipe & rank voicing screen is open,\n"
+            "  • 'amplitude (dB)' is the selected Adjustment,\n"
+            "  • you're working in a spare voicing preset (so you can revert),\n"
+            "  • you'll click the FIRST scanned note's amplitude field when prompted,\n"
+            "    then NOT touch the keyboard/mouse during each apply pass.\n\n"
+            "(Slam the mouse to a screen corner to abort an apply pass.)\n\nProceed?")
+        if not ok:
+            return
+
+        self._av_stop = False
+        self._busy = True
+        self._set_autovoice_running(True)
+        self.av_log.configure(state="normal")
+        self.av_log.delete("1.0", "end")
+        self.av_log.configure(state="disabled")
+
+        cfg = dict(
+            low=low, high=high,
+            scan=dict(channel=self._channel(), velocity=int(self.vel_var.get()),
+                      duration_s=float(self.sdur_var.get()), gap_s=float(self.gap_var.get()),
+                      repeats=int(self.rep_var.get()), noise_floor_db=self.noise_floor_db),
+            mode=self.mode_var.get(), window=int(self.win_var.get()),
+            tol=float(self.tol_var.get()), passes=int(self.passes_var.get()),
+            countdown=int(self.count_var.get()),
+            tab_normal=int(self.tabn_var.get()), tab_octave=int(self.tabc_var.get()),
+        )
+        threading.Thread(target=self._autovoice_worker, args=(cfg,), daemon=True).start()
+
+    def _stop_autovoice(self):
+        self._av_stop = True
+        self.av_status.config(text="stopping…")
+
+    def _autovoice_worker(self, cfg):
+        from . import voicing_apply
+
+        notes = list(range(cfg["low"], cfg["high"] + 1))
+        n = len(notes)
+        MAX_STEP = 12.0       # never move a pipe more than this per pass
+        DESYNC_DB = 2.0       # per-note deviation from prediction that counts as "off"
+        DESYNC_FRAC = 0.30    # fraction of notes off -> assume Tab desync
+
+        def status(text):
+            self.after(0, lambda: self.av_status.config(text=text))
+
+        def log(text):
+            self.after(0, lambda: self._log(text))
+
+        def scan_once(pass_no):
+            self.after(0, lambda: self.scan_pb.config(maximum=n, value=0))
+
+            def prog(done, total, res):
+                self.after(0, lambda: (self.scan_pb.config(value=done),
+                                       status(f"Pass {pass_no}: measuring {res.name} ({done}/{total})")))
+            return scanner.scan_rank(
+                self.meter, self.player, cfg["low"], cfg["high"],
+                should_stop=lambda: self._av_stop, on_progress=prog, **cfg["scan"])
+
+        try:
+            predicted = None
+            for p in range(1, cfg["passes"] + 1):
+                if self._av_stop:
+                    log("Stopped."); break
+
+                log(f"── Pass {p}: measuring {n} notes …")
+                results = scan_once(p)
+                if self._av_stop or len(results) < n:
+                    log("Stopped during measurement."); break
+
+                measured = np.array([r.a_weighted_db for r in results])
+                # Show this scan on the chart/table.
+                self._scan_results = results
+                self.after(0, self._reanalyze)
+
+                if predicted is not None:
+                    off = int(np.sum(np.abs(measured - predicted) > DESYNC_DB))
+                    if off > DESYNC_FRAC * n:
+                        log(f"⚠ {off}/{n} notes are far from the predicted result.")
+                        log("  Likely a Tab mis-count (values may be misaligned). STOPPING.")
+                        log("  Check Hauptwerk, fix Tabs/note, and reset that preset if needed.")
+                        break
+                    log(f"  verification: {off}/{n} notes off prediction (ok).")
+
+                target = analysis.make_target(measured, mode=cfg["mode"], window=cfg["window"])
+                correction = target - measured
+                worst = float(np.max(np.abs(correction)))
+                spread = float(measured.max() - measured.min())
+                log(f"  spread {spread:.1f} dB · worst correction {worst:.1f} dB")
+
+                if worst <= cfg["tol"]:
+                    log(f"✓ Converged — worst correction {worst:.1f} ≤ {cfg['tol']:.1f} dB. Done.")
+                    break
+                if p == cfg["passes"]:
+                    log("Reached max passes (not fully converged)."); break
+
+                correction = np.clip(correction, -MAX_STEP, MAX_STEP)
+                predicted = measured + correction  # expected next measurement
+
+                for s in range(cfg["countdown"], 0, -1):
+                    if self._av_stop:
+                        break
+                    status(f"Click the FIRST note's amplitude field in Hauptwerk — applying in {s}s …")
+                    time.sleep(1)
+                if self._av_stop:
+                    log("Stopped before applying."); break
+
+                status("Applying corrections …")
+
+                def on_step(i, note, old, new):
+                    status(f"Apply {note_name(note)}: {old:+.1f} → {new:+.1f} dB  ({i + 1}/{n})")
+
+                try:
+                    applied = voicing_apply.apply_pass(
+                        notes, correction.tolist(),
+                        tab_normal=cfg["tab_normal"], tab_octave=cfg["tab_octave"],
+                        should_stop=lambda: self._av_stop, on_step=on_step)
+                except voicing_apply.ApplyError as e:
+                    log(f"✗ Apply aborted: {e}")
+                    self.after(0, lambda e=e: messagebox.showerror("Apply failed", str(e)))
+                    break
+                log(f"  applied {len(applied)}/{n} notes.")
+                if len(applied) < n:
+                    log("  (stopped mid-apply)"); break
+        except Exception as e:
+            log(f"✗ Error: {e}")
+            self.after(0, lambda e=e: messagebox.showerror("Auto-voice error", str(e)))
+        finally:
+            self.after(0, self._autovoice_done)
+
+    def _autovoice_done(self):
+        self._busy = False
+        self._set_autovoice_running(False)
+        self.av_status.config(text="idle")
+
+    def _set_autovoice_running(self, running):
+        self.av_btn.config(state="disabled" if running else "normal")
+        self.av_stop_btn.config(state="normal" if running else "disabled")
+        self.scan_btn.config(state="disabled" if running else "normal")
+        for b in (self.play_btn, self.meas_btn):
+            b.config(state="disabled" if running else "normal")
 
     # ===== device / port handling ==========================================
 
@@ -381,7 +591,8 @@ class App(tk.Tk):
             return
         values = [r.a_weighted_db for r in self._scan_results]
         self._balance = analysis.analyze(
-            values, window=int(self.win_var.get()), tolerance_db=float(self.tol_var.get()))
+            values, window=int(self.win_var.get()), tolerance_db=float(self.tol_var.get()),
+            mode=self.mode_var.get())
         self._populate_scan_table()
         self._draw_chart()
 

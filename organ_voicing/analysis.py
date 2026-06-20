@@ -54,6 +54,20 @@ def smooth_target(values, window: int = 7) -> np.ndarray:
     return _moving_average(med, 3)
 
 
+def make_target(values, mode: str = "smooth", window: int = 7) -> np.ndarray:
+    """Target level per note.
+
+    'smooth' — follow the rank's natural gentle regulation curve (recommended).
+    'flat'   — drive every note to the same level (the median of the rank).
+    """
+    v = np.asarray(values, dtype=np.float64)
+    if v.size == 0:
+        return v
+    if mode == "flat":
+        return np.full(v.shape, float(np.median(v)))
+    return smooth_target(v, window=window)
+
+
 @dataclass
 class BalanceResult:
     target: np.ndarray        # fitted target level per note (dB)
@@ -63,10 +77,11 @@ class BalanceResult:
     residual_std_db: float    # std of (measured - target)
 
 
-def analyze(values, window: int = 7, tolerance_db: float = 1.5) -> BalanceResult:
-    """Fit the curve and flag notes whose correction exceeds tolerance."""
+def analyze(values, window: int = 7, tolerance_db: float = 1.5,
+            mode: str = "smooth") -> BalanceResult:
+    """Fit the target and flag notes whose correction exceeds tolerance."""
     v = np.asarray(values, dtype=np.float64)
-    target = smooth_target(v, window=window)
+    target = make_target(v, mode=mode, window=window)
     correction = target - v
     is_outlier = np.abs(correction) >= tolerance_db
     spread = float(v.max() - v.min()) if v.size else 0.0

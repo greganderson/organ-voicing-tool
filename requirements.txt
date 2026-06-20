@@ -5,3 +5,5 @@ sounddevice>=0.4.6     # audio input capture (PortAudio); works with mic input o
 numpy>=1.24            # signal analysis
 mido>=1.3              # MIDI message handling
 python-rtmidi>=1.5     # MIDI backend for mido (sending notes to Hauptwerk)
+pyautogui>=0.9.54      # keyboard automation for auto-apply (Level 3)
+pyperclip>=1.8         # clipboard set/get for pasting decimal dB values
